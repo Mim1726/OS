@@ -42,6 +42,9 @@
 #include <sfs.h>
 #include <syscall.h>
 #include <test.h>
+#include "../asst1/math_tester.h"
+#include "../asst1/producerconsumer_driver.h"
+#include "../asst1/bar_driver.h"
 #include "opt-synchprobs.h"
 #include "opt-sfs.h"
 #include "opt-net.h"
@@ -91,18 +94,14 @@ cmd_progthread(void *ptr, unsigned long nargs)
 	char progname[128];
 	int result;
 
-	KASSERT(nargs >= 1);
-
-	if (nargs > 2) {
-		kprintf("Warning: argument passing from menu not supported\n");
-	}
+KASSERT(nargs >= 1);
 
 	/* Hope we fit. */
 	KASSERT(strlen(args[0]) < sizeof(progname));
 
 	strcpy(progname, args[0]);
 
-	result = runprogram(progname);
+	result = runprogram(progname, args, nargs);
 	if (result) {
 		kprintf("Running program %s failed: %s\n", args[0],
 			strerror(result));
@@ -498,6 +497,7 @@ static const char *mainmenu[] = {
 	"[?o] Operations menu                ",
 	"[?t] Tests menu                     ",
 #if OPT_SYNCHPROBS
+	"[1a] Math test                      ",
 	"[sp1] Whale Mating                  ",
 #ifdef UW
 	"[sp2] Cat/mouse                     ",
@@ -551,6 +551,10 @@ static struct {
 	{ "halt",	cmd_quit },
 
 #if OPT_SYNCHPROBS
+	/* assignment 1a */
+	{ "1a",	maths },
+	{ "1b", producerconsumer },
+	{ "1c", runbar },
 	/* in-kernel synchronization problem(s) */
 	{ "sp1",	whalemating },
 #ifdef UW

@@ -36,14 +36,21 @@
  * Note: curproc is defined by <current.h>.
  */
 
+#include <types.h>
 #include <spinlock.h>
 #include <thread.h> /* required for struct threadarray */
+#include "opt-A2.h"
 
 struct addrspace;
 struct vnode;
 #ifdef UW
 struct semaphore;
 #endif // UW
+
+#if OPT_A2
+struct lock;
+struct cv;
+#endif
 
 /*
  * Process structure.
@@ -69,7 +76,22 @@ struct proc {
 #endif
 
 	/* add more material here as needed */
+#if OPT_A2
+        pid_t p_pid;                 /* this process's PID */
+        pid_t p_parent_pid;          /* PID of parent (0 if none/unknown) */
+        int p_exitcode;              /* exit status, valid once p_exited */
+        bool p_exited;               /* has this process called exit()? */
+        struct lock *p_waitlock;     /* protects p_exited/p_exitcode, paired with p_waitcv */
+        struct cv *p_waitcv;         /* signaled when this process exits */
+#endif
 };
+
+#if OPT_A2
+pid_t proc_assign_pid(struct proc *proc);
+struct proc *proc_search_pid(pid_t pid);
+void proc_reap(struct proc *proc);
+void proc_destroy_incomplete(struct proc *proc);
+#endif
 
 /* This is the process structure for the kernel and for kernel-only threads. */
 extern struct proc *kproc;

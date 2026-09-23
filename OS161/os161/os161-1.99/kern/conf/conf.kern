@@ -282,6 +282,12 @@ file      lib/kgets.c
 file      lib/kprintf.c
 file      lib/misc.c
 file      lib/uio.c
+file      asst1/math.c
+file      asst1/math_tester.c
+file      asst1/producerconsumer_driver.c
+file      asst1/producerconsumer.c
+file      asst1/bar_driver.c
+file      asst1/bar.c
 # UW Mod
 file      lib/queue.c
 

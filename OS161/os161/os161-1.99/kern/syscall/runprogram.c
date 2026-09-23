@@ -1,38 +1,3 @@
-/*
- * Copyright (c) 2000, 2001, 2002, 2003, 2004, 2005, 2008, 2009
- *	The President and Fellows of Harvard College.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- * 3. Neither the name of the University nor the names of its contributors
- *    may be used to endorse or promote products derived from this software
- *    without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE UNIVERSITY AND CONTRIBUTORS ``AS IS'' AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED.  IN NO EVENT SHALL THE UNIVERSITY OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
- * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
- * SUCH DAMAGE.
- */
-
-/*
- * Sample/test code for running a user program.  You can use this for
- * reference when implementing the execv() system call. Remember though
- * that execv() needs to do more than this function does.
- */
-
 #include <types.h>
 #include <kern/errno.h>
 #include <kern/fcntl.h>
@@ -43,66 +8,105 @@
 #include <vm.h>
 #include <vfs.h>
 #include <syscall.h>
+#include <copyinout.h>
 #include <test.h>
 
-/*
- * Load program "progname" and start running it in usermode.
- * Does not return except on error.
- *
- * Calls vfs_open on progname and thus may destroy it.
- */
-int
-runprogram(char *progname)
+static int
+build_runprogram_stack(char **args, unsigned long nargs,
+                        vaddr_t *stackptr_inout, userptr_t *argv_upt)
 {
-	struct addrspace *as;
-	struct vnode *v;
-	vaddr_t entrypoint, stackptr;
-	int result;
+        vaddr_t sp = *stackptr_inout;
+        userptr_t *uargv;
+        long i;
+        int result;
 
-	/* Open the file. */
-	result = vfs_open(progname, O_RDONLY, 0, &v);
-	if (result) {
-		return result;
-	}
+        uargv = kmalloc((nargs + 1) * sizeof(userptr_t));
+        if (uargv == NULL) {
+                return ENOMEM;
+        }
 
-	/* We should be a new process. */
-	KASSERT(curproc_getas() == NULL);
+        for (i = (long)nargs - 1; i >= 0; i--) {
+                size_t len = strlen(args[i]) + 1;
+                sp -= len;
+                result = copyoutstr(args[i], (userptr_t)sp, len, NULL);
+                if (result) {
+                        kfree(uargv);
+                        return result;
+                }
+                uargv[i] = (userptr_t)sp;
+        }
 
-	/* Create a new address space. */
-	as = as_create();
-	if (as ==NULL) {
-		vfs_close(v);
-		return ENOMEM;
-	}
+        sp -= (sp % 4);
+        sp -= (nargs + 1) * sizeof(userptr_t);
+        sp -= (sp % 8);
 
-	/* Switch to it and activate it. */
-	curproc_setas(as);
-	as_activate();
+        for (i = 0; i <= (long)nargs; i++) {
+                userptr_t entry = (i == (long)nargs) ? NULL : uargv[i];
+                result = copyout(&entry, (userptr_t)(sp + i * sizeof(userptr_t)),
+                                  sizeof(userptr_t));
+                if (result) {
+                        kfree(uargv);
+                        return result;
+                }
+        }
 
-	/* Load the executable. */
-	result = load_elf(v, &entrypoint);
-	if (result) {
-		/* p_addrspace will go away when curproc is destroyed */
-		vfs_close(v);
-		return result;
-	}
+        *argv_upt = (userptr_t)sp;
+        *stackptr_inout = sp;
 
-	/* Done with the file now. */
-	vfs_close(v);
-
-	/* Define the user stack in the address space */
-	result = as_define_stack(as, &stackptr);
-	if (result) {
-		/* p_addrspace will go away when curproc is destroyed */
-		return result;
-	}
-
-	/* Warp to user mode. */
-	enter_new_process(0 /*argc*/, NULL /*userspace addr of argv*/,
-			  stackptr, entrypoint);
-	
-	/* enter_new_process does not return. */
-	panic("enter_new_process returned\n");
-	return EINVAL;
+        kfree(uargv);
+        return 0;
 }
 
+/*
+ * Load program "progname" and start running it in usermode, passing
+ * along the given argument array.
+ * Does not return except on error.
+ */
+int
+runprogram(char *progname, char **args, unsigned long nargs)
+{
+        struct addrspace *as;
+        struct vnode *v;
+        vaddr_t entrypoint, stackptr;
+        userptr_t argv_upt;
+        int result;
+
+        result = vfs_open(progname, O_RDONLY, 0, &v);
+        if (result) {
+                return result;
+        }
+
+        KASSERT(curproc_getas() == NULL);
+
+        as = as_create();
+        if (as == NULL) {
+                vfs_close(v);
+                return ENOMEM;
+        }
+
+        curproc_setas(as);
+        as_activate();
+
+        result = load_elf(v, &entrypoint);
+        if (result) {
+                vfs_close(v);
+                return result;
+        }
+
+        vfs_close(v);
+
+        result = as_define_stack(as, &stackptr);
+        if (result) {
+                return result;
+        }
+
+        result = build_runprogram_stack(args, nargs, &stackptr, &argv_upt);
+        if (result) {
+                return result;
+        }
+
+        enter_new_process(nargs, argv_upt, stackptr, entrypoint);
+
+        panic("enter_new_process returned\n");
+        return EINVAL;
+}

@@ -1,0 +1,90 @@
+Assignment 1 - Design Document
+================================
+
+Part 1: Concurrent Mathematics
+-------------------------------
+The shared state is a single global counter (and a per-thread statistics
+array, which is not actually shared since each adder thread only writes
+to its own index). The critical section is the read-modify-write of
+counter: reading its current value, checking it against the target, and
+incrementing it. If two threads perform this sequence concurrently
+without protection, both may read the same value before either writes
+back the increment, causing lost updates (the "x + 1 != x + 1" symptom
+seen in the unsynchronised version).
+
+The fix is a single lock (math_lock) acquired immediately before reading
+counter and released immediately after incrementing it. This is
+deliberately the smallest possible critical section: the lock is
+released before the call to math_test_2(), which the assignment
+requires NOT to run under mutual exclusion, and well before the
+per-thread statistics increment, which needs no synchronisation at all
+since each thread owns a distinct array slot. No deadlock is possible
+since only one lock is ever held at a time by any given thread.
+
+Part 2: Producer/Consumer
+--------------------------
+The shared state is a fixed-size circular buffer (array, head index,
+tail index, and a count of items currently held). Producers write at
+the tail and advance it; consumers read at the head and advance it. The
+critical section is any read or write of this shared buffer state, all
+of which is protected by a single lock (buf_lock).
+
+Two condition variables are used to handle blocking without busy-waiting:
+buf_not_full, which producers wait on when the buffer is at capacity,
+and buf_not_empty, which consumers wait on when the buffer is empty.
+Both waits are guarded by while-loops rather than if-statements, since
+these are Mesa-semantics CVs: a woken thread must re-check the condition
+before proceeding, because another thread may have changed the buffer
+state first. After inserting or removing an item, the corresponding CV
+is signalled to wake exactly one waiter on the other side.
+
+Shutdown is handled without a separate synchronisation mechanism: once
+all producer threads finish, the driver enqueues one sentinel item
+(producer_number == -1) per consumer thread through the same buffer.
+Each consumer that dequeues a sentinel exits its loop. This avoids a
+race between "producers are done" and "consumers still waiting on an
+empty buffer", since the sentinel travels through the exact same
+lock-protected path as real data.
+
+No deadlock is possible: only one lock is ever held, and cv_wait
+releases it before sleeping and reacquires it before returning, so a
+sleeping thread never holds the lock.
+
+Part 3: Bar Synchronisation
+-----------------------------
+This problem has two independent pieces of shared state, each with its
+own critical section.
+
+First, an order queue connects customer threads to bartender threads.
+This is structurally identical to the Part 2 buffer: a bounded circular
+buffer of glass pointers protected by one lock and two condition
+variables (oq_not_full / oq_not_empty). A customer enqueues a pointer to
+its glass and then blocks on a per-order semaphore (glass->ready) until
+a bartender has mixed the drink and posted that semaphore. Using a
+per-order semaphore rather than a shared "order complete" signal avoids
+one customer being woken by another customer's completion.
+
+Second, the bottles themselves are shared resources, and multiple
+bartenders may need to pour from the same bottle at the same time. Each
+of the ten bottles has its own lock, so two bartenders mixing drinks
+that need disjoint bottles can pour in parallel rather than serialising
+on a single bar-wide lock. To prevent deadlock when a single drink needs
+multiple bottles, mix() always acquires the bottles a drink needs in
+ascending bottle-number order, regardless of the order the customer
+listed them in. This enforces a total ordering on lock acquisition
+across all bartenders, which rules out the circular-wait condition
+needed for deadlock (the same principle that fixes the laurel()/hardy()
+deadlock in the tutorial exercises).
+
+Shutdown works the same way as Part 2: a shared counter (protected by
+customers_lock) tracks how many customers are still active. The last
+customer to finish enqueues one NULL sentinel per bartender through the
+order queue; each bartender that dequeues NULL exits its serving loop.
+Bottle usage statistics are updated inside mix() while the relevant
+bottle lock is held, so the printed totals are always consistent with
+the drinks actually poured.
+
+
+sys161 kernel "1a;1a;1a;q"
+sys161 kernel "1b;1b;1b;q"
+sys161 kernel "1c;1c;1c;q"
